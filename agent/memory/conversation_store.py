@@ -508,6 +508,7 @@ class ConversationStore:
         session_id: str,
         max_turns: int = 30,
         with_authors: bool = False,
+        window_limit: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Load the most recent messages for a session, for injection into the LLM.
@@ -527,6 +528,16 @@ class ConversationStore:
                 ever "the one Agent in this conversation"; a shared transcript
                 is where it matters, and where an Agent reading back its own
                 history would otherwise take a colleague's work for its own.
+            window_limit: Row-count cap applied in SQL before the in-memory
+                turn trimming. 0 (default) means no cap — the exact historical
+                behaviour. A positive value bounds the SELECT to the most
+                recent ``window_limit`` rows, which trims IO for long sessions
+                on hot paths where the caller already caps turns well below
+                the full history (e.g. session restore). Because visibility
+                is decided in Python (it needs the parsed JSON), a window can
+                in theory shave off a turn in an abnormally tool-dense
+                session; callers only enable it when a small margin is
+                acceptable.
 
         Returns:
             Chronologically ordered list of message dicts (role, content).
@@ -543,14 +554,19 @@ class ConversationStore:
                 ctx_start = ctx_row[0] if ctx_row else 0
 
                 columns = "seq, role, content" + (", extras" if with_authors else "")
+                window_sql = " LIMIT ?" if window_limit > 0 else ""
+                params = [aid, session_id, ctx_start]
+                if window_limit > 0:
+                    params.append(window_limit)
                 rows = conn.execute(
                     f"""
                     SELECT {columns}
                     FROM messages
                     WHERE agent_id = ? AND session_id = ? AND seq >= ?
                     ORDER BY seq DESC
+                    {window_sql}
                     """,
-                    (aid, session_id, ctx_start),
+                    params,
                 ).fetchall()
             finally:
                 conn.close()

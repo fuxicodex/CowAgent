@@ -246,7 +246,17 @@ class AgentInitializer:
             else:
                 restore_turns = max(3, max_turns // 2)
             saved = store.load_messages(
-                session_id, max_turns=restore_turns, with_authors=shared
+                session_id,
+                max_turns=restore_turns,
+                with_authors=shared,
+                # Cap the rows the SELECT pulls back: restore only needs the
+                # most recent `restore_turns` turns, and each turn spans a few
+                # DB rows (user + assistant + tool blocks). A generous fixed
+                # multiplier keeps the semantics intact (turns are counted in
+                # Python afterwards) while avoiding a full-session scan that
+                # a long chat history would otherwise trigger on every
+                # session restore.
+                window_limit=restore_turns * 4,
             )
             if saved:
                 filtered = self._filter_text_only_messages(saved)
